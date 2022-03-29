@@ -2,26 +2,16 @@
 """
 Run inference on images, videos, directories, streams, etc.
 
-Usage - sources:
-    $ python path/to/detect.py --weights yolov5s.pt --source 0              # webcam
-                                                             img.jpg        # image
-                                                             vid.mp4        # video
-                                                             path/          # directory
-                                                             path/*.jpg     # glob
-                                                             'https://youtu.be/Zgi9g1ksQHc'  # YouTube
-                                                             'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
+Usage when testing (not using camera): sources:
+    $ python path/to/inference.py --test --source   img.jpg        # image
+                                                    vid.mp4        # video
+                                                    path/          # directory
+                                                    path/*.jpg     # glob
+                                                    'https://youtu.be/Zgi9g1ksQHc'  # YouTube
+                                                    'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
 
 Usage - formats:
-    $ python path/to/detect.py --weights yolov5s.pt                 # PyTorch
-                                         yolov5s.torchscript        # TorchScript
-                                         yolov5s.onnx               # ONNX Runtime or OpenCV DNN with --dnn
-                                         yolov5s.xml                # OpenVINO
-                                         yolov5s.engine             # TensorRT
-                                         yolov5s.mlmodel            # CoreML (MacOS-only)
-                                         yolov5s_saved_model        # TensorFlow SavedModel
-                                         yolov5s.pb                 # TensorFlow GraphDef
-                                         yolov5s.tflite             # TensorFlow Lite
-                                         yolov5s_edgetpu.tflite     # TensorFlow Edge TPU
+    $ python path/to/inference.py --weights flir-yolov5.pt      # yolov5 (PyTorch)
 """
 
 import argparse
@@ -49,15 +39,19 @@ from utils.general import (LOGGER, check_file, check_img_size, check_imshow, che
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
 
-modelpath = 'flir.pt'
-#modelpath = 'yolov5s.pt'
+#defaults
+endpoint = '172.24.121.16:8000'
+weights = 'flir-yolov5.pt'
+data = 'flir-yolov5.yaml'
 
 @torch.no_grad()
-def run(weights=ROOT / modelpath,  # model.pt path(s)
-        source=ROOT / 'data/images',  # file/dir/URL/glob, 0 for webcam
-        data=ROOT / 'data/coco128.yaml',  # dataset.yaml path
-        imgsz=(640, 512),  # inference size (height, width)
-        ifx='negative', # CRUCIAL FOR THE THERMAL
+def run(endpoint=endpoint, # endpoint for API
+        weights=weights,  # model.pt path(s)
+        data=data,  # dataset.yaml path
+        test=False,
+        source='images',  # file directory if running algorithm to test
+        imgsz=(640, 512),  # needed inference size for model size (height, width)
+        ifx='negative', # negative effect to replicate thermal
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
         max_det=1000,  # maximum detections per image
@@ -72,8 +66,8 @@ def run(weights=ROOT / modelpath,  # model.pt path(s)
         augment=False,  # augmented inference
         visualize=False,  # visualize features
         update=False,  # update all models
-        project=ROOT / 'runs/detect',  # save results to project/name
-        name='exp',  # save results to project/name
+        project=ROOT / 'tests',  # save results to project/name
+        name='test',  # save results to project/name
         exist_ok=False,  # existing project/name ok, do not increment
         line_thickness=3,  # bounding box thickness (pixels)
         hide_labels=False,  # hide labels
@@ -81,13 +75,10 @@ def run(weights=ROOT / modelpath,  # model.pt path(s)
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         ):
+    is_test = test
+    camera = not is_test
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
-    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
-    is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
-    webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
-    if is_url and is_file:
-        source = check_file(source)  # download
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
@@ -105,7 +96,7 @@ def run(weights=ROOT / modelpath,  # model.pt path(s)
         model.model.half() if half else model.model.float()
 
     # Dataloader
-    if webcam:
+    if camera:
         view_img = check_imshow()
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt)
@@ -146,7 +137,7 @@ def run(weights=ROOT / modelpath,  # model.pt path(s)
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
-            if webcam:  # batch_size >= 1
+            if camera:  # batch_size >= 1
                 p, im0, frame = path[i], im0s[i].copy(), dataset.count
                 s += f'{i}: '
             else:
@@ -214,32 +205,32 @@ def run(weights=ROOT / modelpath,  # model.pt path(s)
         # Print time (inference-only)
         LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
         
-        #REQUESTS CODE HERE FOR JSON
+        # Send data to API endpoint
         data_json = json.dumps(json_dict)
-        print(data_json)
-        url = 'http://172.24.121.16:8000/update' #my mac's ip address
+        url = 'http://' + endpoint + '/update'
         headers = {
             "Content-Type": "application/json",
         }
-        r = requests.post(url, data=data_json, headers=headers)
-        print(r)
+        try:
+            r = requests.post(url, data=data_json, headers=headers)
+        except requests.exceptions.RequestException as err:
+            raise SystemExit(err)
 
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
-    if save_txt or save_img:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
 
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / modelpath, help='model path(s)')
-    parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob, 0 for webcam')
-    parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
+    parser.add_argument('--endpoint', type=str, default=endpoint, help='endpoint for API')
+    parser.add_argument('--weights', nargs='+', type=str, default='flir-yolov5.pt', help='model path(s)')
+    parser.add_argument('--test', action='store_true', help='if testing model, add True')
+    parser.add_argument('--data', type=str, default='flir-yolov5.yaml', help='(optional) dataset.yaml path')
+    parser.add_argument('--source', type=str, default=ROOT / 'images', help='(optional) source if not camera')
+    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference ,camera')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
@@ -254,8 +245,7 @@ def parse_opt():
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--visualize', action='store_true', help='visualize features')
     parser.add_argument('--update', action='store_true', help='update all models')
-    parser.add_argument('--project', default=ROOT / 'runs/detect', help='save results to project/name')
-    parser.add_argument('--name', default='exp', help='save results to project/name')
+    parser.add_argument('--project', default=ROOT / 'tests', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--line-thickness', default=3, type=int, help='bounding box thickness (pixels)')
     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
@@ -270,7 +260,11 @@ def parse_opt():
 
 def main(opt):
     check_requirements(exclude=('tensorboard', 'thop'))
-    run(**vars(opt))
+    try:
+        r = requests.get('http://' + endpoint)
+        run(**vars(opt))
+    except requests.exceptions.RequestException as err:
+        raise SystemExit(err)
 
 
 if __name__ == "__main__":

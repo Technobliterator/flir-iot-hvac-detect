@@ -1,0 +1,8 @@
+names:
+- bicycle
+- car
+- dog
+- person
+nc: 4
+train: flir-dataset-1/train/images
+val: flir-dataset-1/valid/images
