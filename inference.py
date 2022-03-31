@@ -76,7 +76,7 @@ def run(endpoint=endpoint, # endpoint for API
     camera = not is_test
     source = str(source)
 
-    # Directories
+    # Directories to save testing
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
     save_dir.mkdir(parents=True, exist_ok=True)  # make dir
 
@@ -92,7 +92,7 @@ def run(endpoint=endpoint, # endpoint for API
         model.model.half() if half else model.model.float()
 
     # Pruning model
-    prune(model, 0.05)
+    prune(model, 0.2)
 
     # Dataloader
     if camera:
@@ -210,6 +210,8 @@ def run(endpoint=endpoint, # endpoint for API
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
+    
+    return t, json_dict
 
 
 def parse_opt():
