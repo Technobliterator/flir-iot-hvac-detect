@@ -51,6 +51,8 @@ def run(endpoint=endpoint, # endpoint for API
         weights=weights,  # model.pt path(s)
         data=data,  # dataset.yaml path
         test=False,
+        multitest=False,
+        pruning=0.25,
         source='images',  # file directory if running algorithm to test
         imgsz=(640, 512),  # needed inference size for model size (height, width)
         conf_thres=0.25,  # confidence threshold
@@ -72,7 +74,7 @@ def run(endpoint=endpoint, # endpoint for API
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         ):
-    is_test = test
+    is_test = test or multitest
     camera = not is_test
     source = str(source)
 
@@ -92,7 +94,8 @@ def run(endpoint=endpoint, # endpoint for API
         model.model.half() if half else model.model.float()
 
     # Pruning model
-    prune(model, 0.2)
+    if pruning:
+        prune(model, pruning)
 
     # Dataloader
     if camera:
@@ -108,6 +111,8 @@ def run(endpoint=endpoint, # endpoint for API
     # Run inference
     model.warmup(imgsz=(1 if pt else bs, 3, *imgsz), half=half)  # warmup
     dt, seen = [0.0, 0.0, 0.0], 0
+
+    run_data = []
     for path, im, im0s, vid_cap, s in dataset:
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -144,7 +149,8 @@ def run(endpoint=endpoint, # endpoint for API
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # im.jpg
-            s += '%gx%g ' % im.shape[2:]  # print string
+            if not multitest:
+                s += '%gx%g ' % im.shape[2:]  # print string
             
             annotator = Annotator(im0, line_width=line_thickness, example=str(names))
             if len(det):
@@ -173,7 +179,7 @@ def run(endpoint=endpoint, # endpoint for API
                 cv2.waitKey(1)  # 1 millisecond
 
             # Save results (image with detections)
-            if is_test:
+            if test:
                 if dataset.mode == 'image':
                     cv2.imwrite(save_path, im0)
                 else:  # 'video' or 'stream'
@@ -191,27 +197,34 @@ def run(endpoint=endpoint, # endpoint for API
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
+        sec = f'{t3 - t2:.3f}'
         # Print time (inference-only)
-        LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
-        
+        if not multitest:
+            LOGGER.info(f'{s}Done. ({sec}s)')
+        #LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
+
         # Send data to API endpoint
         data_json = json.dumps(json_dict)
         url = 'http://' + endpoint + '/update'
         headers = {
             "Content-Type": "application/json",
         }
-        try:
-            r = requests.post(url, data=data_json, headers=headers)
-        except requests.exceptions.RequestException as err:
-            raise SystemExit(err)
+        if not multitest:
+            try:
+                r = requests.post(url, data=data_json, headers=headers)
+            except requests.exceptions.RequestException as err:
+                raise SystemExit(err)
+
+        run_data.append({'sec': sec, 'data': json_dict})        
 
     # Print results
-    t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+    if not multitest:
+        t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+        LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
     
-    return t, json_dict
+    return run_data
 
 
 def parse_opt():
@@ -219,6 +232,8 @@ def parse_opt():
     parser.add_argument('--endpoint', type=str, default=endpoint, help='endpoint for API')
     parser.add_argument('--weights', nargs='+', type=str, default='flir-yolov5.pt', help='model path(s)')
     parser.add_argument('--test', action='store_true', help='if testing model, add True')
+    parser.add_argument('--multitest', action='store_true', help='if multiple testing, add True')
+    parser.add_argument('--pruning', type=float, default=0.25, help='level of pruning')
     parser.add_argument('--data', type=str, default='flir-yolov5.yaml', help='(optional) dataset.yaml path')
     parser.add_argument('--source', type=str, default=ROOT / 'images', help='(optional) source if not camera')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference ,camera')
@@ -244,14 +259,57 @@ def parse_opt():
     print_args(FILE.stem, opt)
     return opt
 
+def multitest(opt):
+    total_run_data = []
+    number_of_runs = 2 #number of runs purely to test model's mAP and accuracy
 
+    correct_person_numers = [7, 6, 6, 5, 4] #correct number in image 1, 2, 3, 4, and 5 [7, 6, 6, 5, 4]
+    
+    for i in range(number_of_runs):
+        print(f'RUN {i+1}')
+        run_data = run(**vars(opt))
+        for j in range(len(run_data)):
+            if run_data[j]['data']['person']:
+                print('Speed: ' + run_data[j]['sec'] + 's; People found: ' + run_data[j]['data']['person'])
+                diff = 0
+                persons = int(run_data[j]['data']['person'])
+                correct_persons = correct_person_numers[j]
+                if persons > correct_persons:
+                    diff = persons - correct_persons
+                elif correct_persons > persons:
+                    diff = correct_persons - persons
+                run_data[j]['accuracy'] = (correct_persons - diff) / correct_persons
+        print('RUN COMPLETE')
+        print()
+        total_run_data.append(run_data)
+
+    print(total_run_data)
+    total_accuracies = 0
+    total_speeds = 0
+    for i in range(len(total_run_data)):
+        run_accuracies = 0
+        run_speeds = 0
+        for j in range(len(total_run_data[i])):
+            run_accuracies += total_run_data[i][j]['accuracy']
+            run_speeds += float(total_run_data[i][j]['sec'])
+        total_accuracies += run_accuracies / len(total_run_data[i])
+        total_speeds += run_speeds / len(total_run_data[i])
+    mean_average_precision = total_accuracies / len(total_run_data)
+    average_speed = total_speeds / len(total_run_data)
+    print()
+    print(f'Average speed: {average_speed:.3f}s')
+    print(f'mAP: {mean_average_precision:.3f}')
+    
 def main(opt):
     check_requirements(exclude=('tensorboard', 'thop'))
-    try:
-        r = requests.get('http://' + endpoint)
-        run(**vars(opt))
-    except requests.exceptions.RequestException as err:
-        raise SystemExit(err)
+    if opt.multitest:
+        multitest(opt)
+    else: 
+        try:
+            r = requests.get('http://' + endpoint)
+            run(**vars(opt))
+        except requests.exceptions.RequestException as err:
+            raise SystemExit(err)
 
 
 if __name__ == "__main__":
