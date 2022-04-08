@@ -261,7 +261,7 @@ def parse_opt():
 
 def multitest(opt):
     total_run_data = []
-    number_of_runs = 2 #number of runs purely to test model's mAP and accuracy
+    number_of_runs = 10 #number of runs purely to test model's mAP and accuracy
 
     correct_person_numers = [7, 6, 6, 5, 4] #correct number in image 1, 2, 3, 4, and 5 [7, 6, 6, 5, 4]
     
@@ -270,7 +270,7 @@ def multitest(opt):
         run_data = run(**vars(opt))
         for j in range(len(run_data)):
             if run_data[j]['data']['person']:
-                print('Speed: ' + run_data[j]['sec'] + 's; People found: ' + run_data[j]['data']['person'])
+                #print('Speed: ' + run_data[j]['sec'] + 's; People found: ' + run_data[j]['data']['person'])
                 diff = 0
                 persons = int(run_data[j]['data']['person'])
                 correct_persons = correct_person_numers[j]
@@ -279,26 +279,42 @@ def multitest(opt):
                 elif correct_persons > persons:
                     diff = correct_persons - persons
                 run_data[j]['accuracy'] = (correct_persons - diff) / correct_persons
-        print('RUN COMPLETE')
-        print()
+        #print('RUN COMPLETE')
+        #print()
         total_run_data.append(run_data)
 
-    print(total_run_data)
+
     total_accuracies = 0
-    total_speeds = 0
+    total_speeds = []
     for i in range(len(total_run_data)):
         run_accuracies = 0
-        run_speeds = 0
+        run_speeds = []
         for j in range(len(total_run_data[i])):
             run_accuracies += total_run_data[i][j]['accuracy']
-            run_speeds += float(total_run_data[i][j]['sec'])
+            run_speeds.append(float(total_run_data[i][j]['sec']))
         total_accuracies += run_accuracies / len(total_run_data[i])
-        total_speeds += run_speeds / len(total_run_data[i])
+        run_speed_median = 0
+        run_speeds.sort()
+        if len(run_speeds) % 2 == 0:
+            median1 = run_speeds[len(run_speeds)//2]
+            median2 = run_speeds[len(run_speeds)//2-1]
+            run_speed_median = (median1 + median2)/2
+        else:
+            run_speed_median = run_speeds[len(run_speeds)//2]
+        total_speeds.append(run_speed_median)
+
     mean_average_precision = total_accuracies / len(total_run_data)
-    average_speed = total_speeds / len(total_run_data)
-    print()
-    print(f'Average speed: {average_speed:.3f}s')
-    print(f'mAP: {mean_average_precision:.3f}')
+    median_speed = 0
+    if len(total_speeds) % 2 == 0:
+        median1 = total_speeds[len(total_speeds)//2]
+        median2 = total_speeds[len(total_speeds)//2-1]
+        run_speed_median = (median1 + median2)/2
+    else:
+        median_speed = total_speeds[len(total_speeds)//2]
+
+    print('ALL RUNS COMPLETE')
+    print(f'Median (of medians) speed: {median_speed:.3f}s')
+    #print(f'mAP: {mean_average_precision:.3f}')
     
 def main(opt):
     check_requirements(exclude=('tensorboard', 'thop'))
